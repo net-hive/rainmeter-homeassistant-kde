@@ -81,6 +81,11 @@ command_line:
       # Assistant. It is baked into cover_url, so 127.0.0.1 will not work here
       # even though the script itself runs on the HA box - use the LAN address
       # or hostname, including the port.
+      #
+      # Keep every argument on ONE line. In a folded (>-) block, a more-
+      # indented continuation line keeps its line break, and that newline
+      # lands outside the {{ }} - the shell then runs the rest as a separate
+      # command and the sensor fails with return code 127.
       # ---------------------------------------------------------------------
       command: >-
         python3 /config/rainmeter/nowplaying.py
@@ -89,9 +94,7 @@ command_line:
         --ha-base "http://homeassistant.local:8123"
         --picture "{{ state_attr(states('sensor.rainmeter_source_entity'), 'entity_picture') or '' }}"
         --title-b64 "{{ (state_attr(states('sensor.rainmeter_source_entity'), 'media_title') or '') | base64_encode }}"
-        --artist-b64 "{{ (state_attr(states('sensor.rainmeter_source_entity'), 'media_artist')
-                          or state_attr(states('sensor.rainmeter_source_entity'), 'media_album_artist')
-                          or '') | base64_encode }}"
+        --artist-b64 "{{ (state_attr(states('sensor.rainmeter_source_entity'), 'media_artist') or state_attr(states('sensor.rainmeter_source_entity'), 'media_album_artist') or '') | base64_encode }}"
         --album-b64 "{{ (state_attr(states('sensor.rainmeter_source_entity'), 'media_album_name') or '') | base64_encode }}"
         --source-b64 "{{ (state_attr(states('sensor.rainmeter_source_entity'), 'friendly_name') or '') | base64_encode }}"
         --state "{{ states(states('sensor.rainmeter_source_entity')) if states('sensor.rainmeter_source_entity') not in ['none','unknown','unavailable'] else 'idle' }}"

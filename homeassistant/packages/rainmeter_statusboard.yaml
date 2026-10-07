@@ -140,12 +140,16 @@ command_line:
   - sensor:
       name: "Rainmeter Status Board"
       unique_id: rainmeter_statusboard
+      # Template attributes come back as native types, so the payload is
+      # usually a dict, not a string, and base64_encode rejects it ("a
+      # bytes-like object is required, not 'Wrapper'" on HA 2026.9).
+      # to_json turns it back into a document; a string passes through as-is.
       command: >-
         python3 /config/rainmeter/write_json.py
         --www /config/www
         --out statusboard.json
         --stamp ts
-        --b64 "{{ state_attr('sensor.rainmeter_status_board_payload', 'payload') | base64_encode }}"
+        --b64 "{% set p = state_attr('sensor.rainmeter_status_board_payload', 'payload') %}{{ (p if p is string else p | to_json) | base64_encode }}"
       scan_interval: 21600
       command_timeout: 15
       value_template: "{{ value_json.ok }}"
