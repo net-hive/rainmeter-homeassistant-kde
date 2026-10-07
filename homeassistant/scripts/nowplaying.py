@@ -12,9 +12,9 @@ two files into `www/`, which HA serves at `/local/` with no authentication:
 Nothing secret ever leaves HA: `/local/` is unauthenticated by design, and
 these two files contain only what is already on screen.
 
-The accent colour is the interesting part. It is picked from the artwork by
-scoring a quantised palette on saturation and mid-lightness, so the skin can
-tint text to match the album without looking washed out. See pick_accent().
+The accent colour is the interesting part. It is picked from the artwork's
+pixels by a hue histogram weighted toward vivid colour, so the skin can tint
+text to match the album without looking washed out. See pick_accent().
 
 Source-agnostic: it takes whatever entity_picture / title / artist it is
 handed, so Music Assistant, Spotify, Sonos, Cast, Plex, Jellyfin, Squeezebox,
@@ -46,17 +46,27 @@ import colorsys
 import hashlib
 import io
 import json
+import math
 import os
 import sys
 import urllib.request
 
 # --- accent tuning ----------------------------------------------------------
-# Saturation dominates the score, mid-lightness is preferred, and population
-# only breaks ties - otherwise a large flat background always wins and every
-# cover resolves to grey.
-ACCENT_LIGHT_TARGET = 0.55
-ACCENT_LIGHT_SPREAD = 1.2
-ACCENT_POP_WEIGHT = 0.65
+# The accent is picked per pixel: a hue histogram in which every pixel counts
+# by its chroma squared (max-min of RGB - zero for black, white and grey), so
+# vivid colour dominates and muddy shading barely registers. The peak hue wins
+# and the accent is the average of the pixels around it.
+#
+# This replaced scoring a 12-colour quantised palette on HLS saturation. HLS
+# rates near-black as fully saturated (#020001 is S=1.0), so on dark covers a
+# speck of black won and was lifted into a neon tint - The Witcher 3's
+# black-and-red cover came out hot pink - and quantising averaged small vivid
+# accents away into the dark mass.
+ACCENT_HUE_BINS = 36            # 10 degrees each
+ACCENT_MIN_CHROMA = 0.18        # below this a pixel is black/white/grey
+ACCENT_MIN_VALUE = 0.20         # and anything this dark is too
+ACCENT_MIN_SHARE = 0.006        # under 0.6% vivid pixels the cover is neutral
+ACCENT_SPREAD = 1.5             # bins either side of the peak that form the colour
 # Floors, so washed-out art still produces something readable against a dark
 # panel rather than near-black text.
 ACCENT_LIGHT_MIN = 0.58
@@ -97,28 +107,45 @@ def b64arg(value: str) -> str:
 
 
 def pick_accent(img) -> tuple[int, int, int]:
-    """Choose a vibrant, readable accent colour from the artwork."""
+    """Choose a vibrant, readable accent colour from the artwork.
+
+    Neutral art (black, white, grey, sepia) has no hue worth tinting with, so
+    it gets FALLBACK_RGB rather than an invented colour.
+    """
     small = img.copy()
-    small.thumbnail((80, 80))
-    quant = small.quantize(colors=12)
-    palette = quant.getpalette() or []
-    counts = quant.getcolors() or []
-    total = sum(c for c, _ in counts) or 1
-
-    best, best_score = None, -1.0
-    for count, idx in counts:
-        r, g, b = palette[idx * 3 : idx * 3 + 3]
-        hue, light, sat = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
-        score = (sat ** 1.5) * max(
-            0.0, 1 - abs(light - ACCENT_LIGHT_TARGET) * ACCENT_LIGHT_SPREAD
-        )
-        score *= (1 - ACCENT_POP_WEIGHT) + ACCENT_POP_WEIGHT * (count / total)
-        if score > best_score:
-            best_score, best = score, (hue, light, sat)
-
-    if best is None:
+    small.thumbnail((96, 96))
+    raw = small.tobytes()
+    bins = [0.0] * ACCENT_HUE_BINS
+    samples = []
+    for i in range(0, len(raw), 3):
+        r, g, b = raw[i] / 255, raw[i + 1] / 255, raw[i + 2] / 255
+        hi, lo = max(r, g, b), min(r, g, b)
+        chroma = hi - lo
+        if chroma < ACCENT_MIN_CHROMA or hi < ACCENT_MIN_VALUE:
+            continue
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        w = chroma * chroma
+        bins[int(h * ACCENT_HUE_BINS) % ACCENT_HUE_BINS] += w
+        samples.append((h, s, v, w))
+    if len(samples) < max(12, (len(raw) // 3) * ACCENT_MIN_SHARE):
         return FALLBACK_RGB
-    hue, light, sat = best
+
+    # Light smoothing so a hue sitting on a bin edge is not split in two.
+    n = ACCENT_HUE_BINS
+    smooth = [bins[i - 1] * 0.5 + bins[i] + bins[(i + 1) % n] * 0.5 for i in range(n)]
+    peak = (max(range(n), key=smooth.__getitem__) + 0.5) / n
+
+    sx = sy = sw = ss = sv = 0.0
+    for h, s, v, w in samples:
+        d = abs(h - peak)
+        if min(d, 1 - d) <= ACCENT_SPREAD / n:
+            sx += w * math.cos(2 * math.pi * h)
+            sy += w * math.sin(2 * math.pi * h)
+            sw += w
+            ss += w * s
+            sv += w * v
+    hue = (math.atan2(sy, sx) / (2 * math.pi)) % 1.0
+    _, light, sat = colorsys.rgb_to_hls(*colorsys.hsv_to_rgb(hue, ss / sw, sv / sw))
     light = min(max(light, ACCENT_LIGHT_MIN), ACCENT_LIGHT_MAX)
     sat = max(sat, ACCENT_SAT_MIN)
     return tuple(int(round(v * 255)) for v in colorsys.hls_to_rgb(hue, light, sat))
